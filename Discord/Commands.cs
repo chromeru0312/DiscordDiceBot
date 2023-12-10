@@ -1,7 +1,8 @@
-﻿using Discord.Interactions;
-using Discord;
+﻿using Discord;
+using Discord.Interactions;
+using DiscordDiceBot.Dice;
 
-namespace DiscordDiceBot
+namespace DiscordDiceBot.Discord
 {
     [EnabledInDm(false)]
     [Group("bcdice", "BCDiceの設定を行います。")]
@@ -13,14 +14,16 @@ namespace DiscordDiceBot
         {
             bool res;
             string mode_name;
+            using var context = new SettingContext();
+            var setting = await context.GetOrCreateGuildAsync(Context.Guild.Id);
             switch (mode)
             {
                 case SetMode.Server:
-                    res = DiscordBot.Instance.SetGuildDefaultSystem(Context.Guild.Id, system);
+                    res = setting.SetDefaultSystem(system);
                     mode_name = "サーバー";
                     break;
                 case SetMode.Channel:
-                    res = DiscordBot.Instance.SetChannelDefaultSystem(Context.Guild.Id, Context.Channel.Id, system);
+                    res = setting.SetDefaultSystem(Context.Channel.Id, system);
                     mode_name = "チャンネル";
                     break;
                 default:
@@ -29,6 +32,7 @@ namespace DiscordDiceBot
                     return;
             }
 
+            await context.SaveChangesAsync();
             var embed = res ? BotEmbed.Default("設定完了", $"{mode_name}のデフォルトゲームシステムを `{system}` に設定しました。") :
                 BotEmbed.Error("指定されたゲームシステムは存在しないか、現在と同じ設定です。");
             await RespondAsync(embed, !res);
@@ -36,7 +40,11 @@ namespace DiscordDiceBot
         [SlashCommand("remove-default", "現在のチェンネルに設定されているデフォルト設定を削除します。")]
         public async Task RemoveDefaultSystem()
         {
-            DiscordBot.Instance.SetChannelDefaultSystem(Context.Guild.Id, Context.Channel.Id, null);
+            using var context = new SettingContext();
+            var setting = await context.GetOrCreateGuildAsync(Context.Guild.Id);
+            setting.SetDefaultSystem(Context.Channel.Id, null);
+
+            await context.SaveChangesAsync();
             await RespondAsync(BotEmbed.Default("設定完了", $"チャンネルのデフォルトゲームシステムを削除しました。"), false);
         }
 
@@ -46,14 +54,16 @@ namespace DiscordDiceBot
         {
             bool res;
             string mode_name;
+            using var context = new SettingContext();
+            var setting = await context.GetOrCreateGuildAsync(Context.Guild.Id);
             switch (mode)
             {
                 case SetMode.Server:
-                    res = DiscordBot.Instance.SetGuildMessageRoll(Context.Guild.Id, enable);
+                    res = setting.SetMessageRoll(enable);
                     mode_name = "サーバー";
                     break;
                 case SetMode.Channel:
-                    res = DiscordBot.Instance.SetChannelMessageRoll(Context.Guild.Id, Context.Channel.Id, enable);
+                    res = setting.SetMessageRoll(Context.Channel.Id, enable);
                     mode_name = "チャンネル";
                     break;
                 default:
@@ -62,6 +72,7 @@ namespace DiscordDiceBot
                     return;
             }
 
+            await context.SaveChangesAsync();
             var embed = res ? BotEmbed.Default("設定完了", $"{mode_name}のコマンド不使用ロールを {(enable ? "ON" : "OFF")} に設定しました。") :
                 BotEmbed.Error("デフォルトのゲームシステムが設定されていないか、現在と同じ設定です。");
             await RespondAsync(embed, !res);
@@ -81,12 +92,10 @@ namespace DiscordDiceBot
         {
             if (string.IsNullOrEmpty(system))
             {
-                if (DiscordBot.Instance.Settings.TryGetValue(Context.Guild.Id, out var settings) && settings != null)
-                {
-                    if (settings.Channel.TryGetValue(Context.Channel.Id, out var setting))
-                        system = setting.DefaultSystem ?? settings.Guild.DefaultSystem;
-                    else system = settings.Guild.DefaultSystem;
-                }
+                using var context = new SettingContext();
+                RollSetting? setting = await context.Channel.FindAsync(Context.Guild.Id, Context.Channel.Id);
+                setting ??= await context.GetOrCreateGuildAsync(Context.Guild.Id);
+                system = setting.DefaultSystem;
 
                 if (string.IsNullOrEmpty(system))
                 {
@@ -96,12 +105,12 @@ namespace DiscordDiceBot
             }
             else if (!BCDice.Instance.ExistSystemFromId(system))
             {
-                if (!BCDice.Instance.ExistSystemFromName(system, out var id))
+                if (BCDice.Instance.ExistSystemFromName(system, out var id)) system = id;
+                else
                 {
                     await RespondAsync(BotEmbed.Error("指定されたゲームシステムが存在しません。"), true);
                     return;
                 }
-                else system = id;
             }
 
             var roll = await BCDice.Instance.Roll(system, cmd);

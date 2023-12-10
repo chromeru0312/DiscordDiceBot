@@ -1,6 +1,6 @@
 ﻿using Discord;
 
-namespace DiscordDiceBot
+namespace DiscordDiceBot.Discord
 {
     internal class BotEmbed
     {

@@ -11,13 +11,19 @@ namespace DiscordDiceBot
 #else
         = false;
 #endif
+        private static DateTime NextLogFileDate { get; set; } = DateTime.Today;
         private static ConsoleStream? ConsoleWriter { get; set; }
         private static ConsoleColor DefaultColor { get; set; }
 
         private static Queue<LogData> LogQueue { get; } = new();
         private static Task ConsoleTask { get; set; } = Task.CompletedTask;
 
-        internal static void CreateNewLogFile()
+        internal static void Init()
+        {
+            CreateNewLogFile();
+            NextLogFileDate = DateTime.Today.AddDays(1);
+        }
+        private static void CreateNewLogFile()
         {
             if (LogPath == null)
             {
@@ -25,14 +31,23 @@ namespace DiscordDiceBot
                 if (!Directory.Exists(LogPath)) Directory.CreateDirectory(LogPath);
                 DefaultColor = IsDebug ? ConsoleColor.White : Console.ForegroundColor;
             }
-            var path = Path.Combine(LogPath, $"log-{DateTime.Now:yyyyMMddHHmm}.log");
-            ConsoleWriter = new ConsoleStream(new(path, true, Encoding.UTF8)) { AutoFlush = true };
+
+            var path = Path.Combine(LogPath, DateTime.Today.ToString("yyyyMMdd"));
+            int no = 0;
+            while (File.Exists(path + (no != 0 ? $"_{no}" : "") + ".log")) no++;
+            ConsoleWriter = new ConsoleStream(new(path + (no != 0 ? $"_{no}" : "") + ".log", true, Encoding.UTF8)) { AutoFlush = true };
             Console.SetOut(ConsoleWriter);
+
+            var log_info = "--- Log File Information ---\n" +
+                $"Log Date: {DateTime.Today:yyyy-MM-dd}\n" +
+                $"Mode: {(IsDebug ? "Debug" : "Release")}\n" +
+                "--- End of Log File Information ---\n\n";
+            ConsoleWriter.FileStream.WriteLine(log_info);
         }
 
-        public static void Log(LogLevel level, LogSource source, string message, Exception? exception = null)
+        public static void Log(LogLevel level, LogSource source, string message, Exception? exception = null, bool mention = false)
         {
-            LogQueue.Enqueue(new(DateTime.Now, level, source, message, exception));
+            LogQueue.Enqueue(new(DateTime.Now, level, source, message, exception, mention));
             if (ConsoleTask.IsCompleted)
             {
                 ConsoleTask = new Task(LogInner);
@@ -42,33 +57,36 @@ namespace DiscordDiceBot
         private static void LogInner()
         {
             var tasks = new List<Task>();
-            if (ConsoleWriter == null) return;
+            if (ConsoleWriter == null)
+            {
+                CreateNewLogFile();
+                NextLogFileDate = DateTime.Today.AddDays(1);
+            }
             while (LogQueue.Count > 0)
             {
                 var data = LogQueue.Dequeue();
                 var src = data.Source.ToString();
                 if (string.IsNullOrWhiteSpace(src) && string.IsNullOrWhiteSpace(data.Message)) return;
 
-                var text = $"{data.Date:yyyy/MM/dd HH:mm:ss.fff} [{src}]";
-                var msg = string.IsNullOrWhiteSpace(data.Message) ? "(No message.)" : data.Message;
-                var msgs = msg.Split('\n');
-                var level = data.Level.ToString();
-                while (level.Length < 8) level += " ";
-
-                if (!IsDebug && data.Level == LogLevel.Debug)
+                if (NextLogFileDate <= data.Date)
                 {
-                    foreach (var log in msgs)
-                        ConsoleWriter.FileStream.WriteLine($"{level} {text} {log}");
+                    CreateNewLogFile();
+                    NextLogFileDate = DateTime.Today.AddDays(1);
                 }
-                else
+                var time = data.Date.ToString("HH:mm:ss.fff");
+                var level = data.Level.ToString().ToUpper().PadRight(8);
+                var source = $"[{src}]";
+                var msgs = string.IsNullOrWhiteSpace(data.Message) ? new[] { "(No message.)" } : data.Message.Split('\n');
+
+                if (data.Level != LogLevel.Debug || IsDebug)
                 {
                     var color = data.Level switch
                     {
                         LogLevel.Critical => ConsoleColor.DarkRed,
                         LogLevel.Error => ConsoleColor.Red,
                         LogLevel.Warning => ConsoleColor.Yellow,
-                        LogLevel.Notice => ConsoleColor.DarkGreen,
                         LogLevel.Info => ConsoleColor.DarkCyan,
+                        LogLevel.Verbose => ConsoleColor.DarkGreen,
                         LogLevel.Debug => ConsoleColor.DarkGray,
                         _ => DefaultColor
                     };
@@ -78,62 +96,33 @@ namespace DiscordDiceBot
                         Console.ForegroundColor = color;
                         Console.Write(level);
 
-                        if (data.Level != LogLevel.Debug)
-                            Console.ForegroundColor = DefaultColor;
-                        Console.WriteLine($" {text} {log}");
+                        if (data.Level != LogLevel.Debug) Console.ForegroundColor = DefaultColor;
+                        Console.WriteLine($" {time} {source} {log}");
                     }
 
-                    var e = data.Exception;
-                    if (e != null && (data.Level == LogLevel.Critical || data.Level == LogLevel.Error))
+                    if (data.Exception != null && (data.Level <= LogLevel.Warning))
                     {
-                        var error = new List<string>() { $"{e.GetType()} - {e.Message}" };
-                        var st = e.StackTrace?.Split('\n');
-                        if (st != null) error.AddRange(st);
-                        foreach (var line in error)
-                        {
-                            Console.ForegroundColor = color;
-                            Console.Write(level);
-
-                            Console.ForegroundColor = DefaultColor;
-                            Console.WriteLine($" {text} {line}");
-                        }
-
-                        var ex = e;
+                        var error_log = $"{data.Exception.GetType()} - {data.Exception.Message}\n{data.Exception.StackTrace}";
+                        var ex = data.Exception;
                         var count = 5;
                         var inner = new List<string>();
                         while (count >= 0 && ex.InnerException != null)
                         {
                             ex = ex.InnerException;
-                            inner.Add($"--> {ex.GetType()} - {ex.Message}");
-                            var trace = ex.StackTrace?.Split('\n').Select(s => $"    {s}");
-                            if (trace != null) inner.AddRange(trace);
+                            error_log += $"\n--> {ex.GetType()} - {ex.Message}\n{ex.StackTrace?.Split('\n').Select(s => $"    {s}")}\n";
                             count--;
-                            if (count == 0)
-                            {
-                                inner.Add("--> [and more inner exceptions...]");
-                                count--;
-                                break;
-                            }
+                            if (count == 0) error_log += "\n--> [and more inner exceptions...]";
                         }
-                        foreach (var line in inner)
-                        {
-                            ConsoleWriter.FileStream.WriteLine($"{level} {text} {line}");
-                        }
-                        error.AddRange(inner);
-                        if (count < 5)
-                        {
-                            var count_str = count < 0 ? "6+" : $"{5 - count}";
-                            var multi = count == 4 ? "" : "s";
-                            Console.WriteLine($"--> [and {count_str} inner exception{multi}...]");
-                        }
-                        tasks.Add(BotStart.SendStatus(new($"{data.Source}\n{data.Message}", string.Join('\n', error), false)));
+                        Console.WriteLine($"--- Exception Dump ---\n{error_log}\n--- End of Exception Dump ---");
+                        if (data.Level != LogLevel.Warning)
+                            tasks.Add(BotStart.SendStatus(new($"{data.Source}\n{data.Message}", error_log, data.Level == LogLevel.Critical)));
                     }
                 }
                 Console.ForegroundColor = DefaultColor;
 
                 if (data.Level == LogLevel.Critical)
                 {
-                    ConsoleWriter.Close();
+                    ConsoleWriter!.Close();
                     Environment.Exit(1);
                 }
             }
@@ -196,12 +185,12 @@ namespace DiscordDiceBot
             }
         }
 
-        private record LogData(DateTime Date, LogLevel Level, LogSource Source, string Message, Exception? Exception);
+        private record LogData(DateTime Date, LogLevel Level, LogSource Source, string Message, Exception? Exception, bool Mention);
     }
 
     public enum LogLevel
     {
-        Critical, Error, Warning, Notice, Info, Debug, Trace
+        Critical, Error, Warning, Info, Verbose, Debug, Trace
     }
 
     public class LogSource

@@ -1,7 +1,9 @@
-﻿using System.Globalization;
+﻿using DiscordDiceBot.Dice;
+using DiscordDiceBot.Discord;
+using Microsoft.Extensions.Configuration;
+using System.Globalization;
 using System.Net.Http.Json;
 using System.Text;
-using System.Text.Json;
 using Timer = System.Timers.Timer;
 
 namespace DiscordDiceBot
@@ -10,26 +12,24 @@ namespace DiscordDiceBot
     {
         internal static HttpClient Client { get; } = new();
         internal static Timer Timer { get; } = new(60000);
-        internal static string DiscordToken { get; private set; }
-        internal static string BCDiceUrl { get; private set; }
-        internal static string StatusUrl { get; private set; }
+        internal static IConfigurationRoot Configuration { get; }
+            = new ConfigurationBuilder()
+                .AddJsonFile("appsettings.json")
+#if DEBUG
+                .AddJsonFile("appsettings.Development.json")
+#endif
+                .Build();
         private static bool Exit { get; set; } = false;
 
         public static void Main()
         {
             Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
             CultureInfo.CurrentCulture = new(1041);
-            LocalConsole.CreateNewLogFile();
+            LocalConsole.Init();
             Console.CancelKeyPress += CancelKeyPress;
 #if DEBUG
             LocalConsole.IsDebug = true;
 #endif
-
-            var text = DataManager.Instance.StringLoad("Authentication", ".json")!;
-            var json = JsonDocument.Parse(text);
-            DiscordToken = json.RootElement.GetProperty("discord_token").GetString()!;
-            BCDiceUrl = json.RootElement.GetProperty("bcdice_url").GetString()!;
-            StatusUrl = json.RootElement.GetProperty("status_url").GetString()!;
 
             _ = BCDice.Instance;
             DiscordBot.Instance.BotStart().Wait();
@@ -52,7 +52,11 @@ namespace DiscordDiceBot
 
         internal static async Task SendStatus(ErrorDetail? error = null)
         {
-            await Client.PostAsJsonAsync(StatusUrl, new StatusRequest(error));
+            try
+            {
+                await Client.PostAsJsonAsync(Configuration["status_url"], new StatusRequest(error));
+            }
+            catch { }
         }
     }
 
